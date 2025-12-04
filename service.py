@@ -20,6 +20,7 @@ from typing import List, Union
 
 import hanlp
 import pandas as pd
+import polars as pl
 import yaml
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
@@ -1318,6 +1319,52 @@ class Anonymizer:
 
         return results if is_list else results[0]
 
+    def apply_method_series(self, series_data, method: str):
+        """
+        Vectorized method to apply anonymization to a pandas Series or similar iterable.
+        Returns a list of processed values.
+        """
+        import numpy as np
+
+        if method == "null":
+            return [
+                self._empty_anonymize(item)
+                if pd.notna(item) and str(item).strip()
+                else item
+                for item in series_data
+            ]
+
+        results = []
+        for item in series_data:
+            if pd.isna(item) or not str(item).strip():
+                results.append(item)
+                continue
+
+            item_str = str(item)
+
+            if method == "hash":
+                result = self.hash_anonymize(item_str)
+            elif method == "location":
+                result = self.address_anonymize(item_str)
+            elif method == "truncate":
+                result = self.truncate_anonymize(item_str)
+            elif method == "round":
+                result = self.round_anonymize(item, -2)
+            elif method == "bucket":
+                result = self.bucket_anonymize(item)
+            elif method == "enc":
+                result = self.aes_encrypt(item_str)
+            elif method == "sm4":
+                result = self.sm4_encrypt(item_str)
+            elif method == "random":
+                result = self.rm([item])[0]
+            else:
+                result = item
+
+            results.append(result)
+
+        return results
+
     def decrypt_mask(self, text: str) -> str:
         pattern = re.compile(r"8e4f1([A-Za-z0-9+/]+=*)202cf")
         matches = pattern.findall(text)
@@ -1375,6 +1422,232 @@ app = FastAPI(
 )
 
 
+# def process_table_masking_task(
+#     file_content: bytes,
+#     filename: str,
+#     columns_dict: dict,
+#     request_id: str,
+#     file_extension: str,
+# ):
+#     """
+#     独立的表格脱敏任务处理函数，可以被 RQ worker 调用
+
+#     Args:
+#         file_content: 文件内容（字节）
+#         filename: 原始文件名
+#         columns_dict: 列名和处理方式的字典
+#         request_id: 请求ID
+#         file_extension: 文件扩展名（.csv 或 .xlsx）
+
+#     Returns:
+#         dict: 包含处理结果的字典
+#     """
+#     try:
+#         start_time = time.time()
+
+#         logger.bind(type="TASK", request_id=request_id).info(
+#             f"Task started - Processing file: {filename} with columns: {columns_dict}"
+#         )
+
+#         # 读取文件
+#         if file_extension == ".csv":
+#             supported_encodings = ["utf-8", "gbk", "gb18030"]
+#             df = None
+#             for encoding in supported_encodings:
+#                 try:
+#                     df = pd.read_csv(
+#                         io.BytesIO(file_content),
+#                         encoding=encoding,
+#                         keep_default_na=False,
+#                     )
+#                     logger.bind(type="TASK", request_id=request_id).info(
+#                         f"Successfully decoded CSV with encoding: {encoding}"
+#                     )
+#                     break
+#                 except UnicodeDecodeError:
+#                     continue
+#             if df is None:
+#                 raise ValueError("文件解码失败，尝试了所有支持的编码")
+#         else:  # .xlsx
+#             df = pd.read_excel(io.BytesIO(file_content), keep_default_na=False)
+
+#         logger.bind(type="TASK", request_id=request_id).info(
+#             f"File loaded - Rows: {len(df)}, Columns: {len(df.columns)}"
+#         )
+
+#         # 检测列名是否存在
+#         missing_columns = [col for col in columns_dict.keys() if col not in df.columns]
+#         if missing_columns:
+#             raise ValueError(f"列名不存在: {missing_columns}")
+
+#         # 逐列处理
+#         processing_results = {}
+#         total_texts_processed = 0
+#         total_entities_found = 0
+#         column_stats = {}
+#         all_masking_operations = []
+#         anonymizer = table_masking_worker.anonymizer
+
+#         for idx, (column, method) in enumerate(columns_dict.items(), 1):
+#             column_start_time = time.time()
+
+#             logger.bind(type="TASK", request_id=request_id).info(
+#                 f"Processing column {idx}/{len(columns_dict)}: {column} with method: {method}"
+#             )
+
+#             column_data = df[column].fillna("").astype(str).tolist()
+#             non_empty_data = [text for text in column_data if text.strip()]
+#             total_texts_processed += len(non_empty_data)
+
+#             if method == "text":
+#                 # 使用文本脱敏模型处理
+#                 results = table_masking_worker.func_f(
+#                     non_empty_data, request_id=request_id
+#                 )
+
+#                 processing_results[column] = results
+#                 if "text" in results:
+#                     # 将处理结果映射回原DataFrame
+#                     non_empty_indices = [
+#                         i for i, text in enumerate(column_data) if text.strip()
+#                     ]
+#                     for idx_pos, result_text in zip(non_empty_indices, results["text"]):
+#                         df.at[idx_pos, column] = result_text
+
+#                 # 收集脱敏操作信息
+#                 if "masking_operations" in results and results["masking_operations"]:
+#                     for op in results["masking_operations"]:
+#                         op_with_context = {
+#                             "column": column,
+#                             "original_text": op["original_text"],
+#                             "entity_type": op["entity_type"],
+#                             "replaced_text": op["replaced_text"],
+#                             "applied_method": op.get("applied_method", "text"),
+#                             "original_text_index": op.get("original_text_index", -1),
+#                         }
+#                         all_masking_operations.append(op_with_context)
+
+#                 # 统计实体数量
+#                 column_entities = 0
+#                 if "entities" in results:
+#                     column_entities = sum(
+#                         len(entities) for entities in results["entities"]
+#                     )
+#                     total_entities_found += column_entities
+
+#                 column_stats[column] = {
+#                     "method": "text",
+#                     "texts_processed": len(non_empty_data),
+#                     "entities_found": column_entities,
+#                     "avg_entities_per_text": column_entities / len(non_empty_data)
+#                     if non_empty_data
+#                     else 0,
+#                     "processing_time": time.time() - column_start_time,
+#                 }
+#             else:
+#                 # 使用其他脱敏方法
+#                 processed_data = anonymizer.apply_method(non_empty_data, method)
+
+#                 # 将处理结果映射回原DataFrame
+#                 non_empty_indices = [
+#                     i for i, text in enumerate(column_data) if text.strip()
+#                 ]
+#                 for idx_pos, result in zip(non_empty_indices, processed_data):
+#                     df.at[idx_pos, column] = result
+
+#                 # 记录处理操作
+#                 column_masking_ops = []
+#                 for idx_val, (original, processed) in enumerate(
+#                     zip(non_empty_data, processed_data)
+#                 ):
+#                     if original != processed:
+#                         column_masking_ops.append(
+#                             {
+#                                 "column": column,
+#                                 "original_text": original,
+#                                 "entity_type": method.upper(),
+#                                 "replaced_text": processed,
+#                                 "applied_method": method,
+#                                 "original_text_index": idx_val,
+#                             }
+#                         )
+
+#                 all_masking_operations.extend(column_masking_ops)
+
+#                 column_stats[column] = {
+#                     "method": method,
+#                     "texts_processed": len(non_empty_data),
+#                     "transformations": len(column_masking_ops),
+#                     "avg_transformations_per_text": len(column_masking_ops)
+#                     / len(non_empty_data)
+#                     if non_empty_data
+#                     else 0,
+#                     "processing_time": time.time() - column_start_time,
+#                 }
+
+#                 processing_results[column] = {
+#                     "method": method,
+#                     "processed_count": len(processed_data),
+#                     "transformations_count": len(column_masking_ops),
+#                 }
+
+#             logger.bind(type="TASK", request_id=request_id).info(
+#                 f"Column {column} processed in {time.time() - column_start_time:.2f}s"
+#             )
+
+#         # 保存处理后的文件
+#         output_filename = f"{request_id}_{filename}"
+#         output_file = TASK_RESULTS_DIR / output_filename
+
+#         if file_extension == ".csv":
+#             df.to_csv(output_file, index=False, encoding="utf-8")
+#         else:  # .xlsx
+#             df.to_excel(output_file, index=False, engine="openpyxl")
+
+#         processing_time = time.time() - start_time
+
+#         # 构建汇总结果
+#         aggregation_summary = {
+#             "file_name": filename,
+#             "total_rows": len(df),
+#             "total_columns": len(columns_dict),
+#             "total_texts_processed": total_texts_processed,
+#             "total_entities_found": total_entities_found,
+#             "total_transformations": len(all_masking_operations),
+#             "processing_time": processing_time,
+#             "avg_processing_time_per_text": processing_time / total_texts_processed
+#             if total_texts_processed > 0
+#             else 0,
+#             "column_stats": column_stats,
+#         }
+
+#         logger.bind(type="TASK", request_id=request_id).success(
+#             f"Task completed - File: {filename}, Time: {processing_time:.2f}s, "
+#             f"Rows: {len(df)}, Entities: {total_entities_found}"
+#         )
+
+#         # 返回结果
+#         return {
+#             "success": True,
+#             "file_path": str(output_file),
+#             "filename": output_filename,
+#             "original_filename": filename,
+#             "processed_columns": list(columns_dict.keys()),
+#             "column_methods": columns_dict,
+#             "total_rows": len(df),
+#             "aggregation_results": aggregation_summary,
+#             # "processing_results": processing_results,
+#             # "masking_operations": all_masking_operations,
+#             "request_id": request_id,
+#         }
+
+#     except Exception as e:
+#         logger.bind(type="TASK", request_id=request_id).error(
+#             f"Task failed - Error: {str(e)}"
+#         )
+#         raise
+
+
 def process_table_masking_task(
     file_content: bytes,
     filename: str,
@@ -1383,7 +1656,7 @@ def process_table_masking_task(
     file_extension: str,
 ):
     """
-    独立的表格脱敏任务处理函数，可以被 RQ worker 调用
+    Polars 优化的版本
 
     Args:
         file_content: 文件内容（字节）
@@ -1404,34 +1677,43 @@ def process_table_masking_task(
 
         # 读取文件
         if file_extension == ".csv":
+            # 尝试不同的编码
             supported_encodings = ["utf-8", "gbk", "gb18030"]
-            df = None
+            df_pl = None
             for encoding in supported_encodings:
                 try:
-                    df = pd.read_csv(
+                    df_pl = pl.read_csv(
                         io.BytesIO(file_content),
                         encoding=encoding,
-                        keep_default_na=False,
+                        null_values=["", "NULL", "null", "None"],
+                        infer_schema_length=10000,  # 推断模式
                     )
                     logger.bind(type="TASK", request_id=request_id).info(
                         f"Successfully decoded CSV with encoding: {encoding}"
                     )
                     break
-                except UnicodeDecodeError:
+                except Exception:
                     continue
-            if df is None:
+            if df_pl is None:
                 raise ValueError("文件解码失败，尝试了所有支持的编码")
         else:  # .xlsx
-            df = pd.read_excel(io.BytesIO(file_content), keep_default_na=False)
+            # 对于 Excel 文件，先用 pandas 读取，然后转换为 Polars
+            df_pandas = pd.read_excel(io.BytesIO(file_content), keep_default_na=False)
+            df_pl = pl.from_pandas(df_pandas)
 
         logger.bind(type="TASK", request_id=request_id).info(
-            f"File loaded - Rows: {len(df)}, Columns: {len(df.columns)}"
+            f"File loaded - Rows: {len(df_pl)}, Columns: {len(df_pl.columns)}"
         )
 
         # 检测列名是否存在
-        missing_columns = [col for col in columns_dict.keys() if col not in df.columns]
+        missing_columns = [
+            col for col in columns_dict.keys() if col not in df_pl.columns
+        ]
         if missing_columns:
             raise ValueError(f"列名不存在: {missing_columns}")
+
+        # 获取 anonymizer 实例
+        anonymizer = table_masking_worker.anonymizer
 
         # 逐列处理
         processing_results = {}
@@ -1439,7 +1721,6 @@ def process_table_masking_task(
         total_entities_found = 0
         column_stats = {}
         all_masking_operations = []
-        anonymizer = table_masking_worker.anonymizer
 
         for idx, (column, method) in enumerate(columns_dict.items(), 1):
             column_start_time = time.time()
@@ -1448,45 +1729,72 @@ def process_table_masking_task(
                 f"Processing column {idx}/{len(columns_dict)}: {column} with method: {method}"
             )
 
-            column_data = df[column].fillna("").astype(str).tolist()
-            non_empty_data = [text for text in column_data if text.strip()]
+            # 获取列数据（转换为 list 用于处理）
+            column_data = df_pl[column].to_list()
+            non_empty_data = [
+                text for text in column_data if text is not None and str(text).strip()
+            ]
             total_texts_processed += len(non_empty_data)
 
             if method == "text":
-                # 使用文本脱敏模型处理
-                results = table_masking_worker.func_f(
-                    non_empty_data, request_id=request_id
+                # 对于文本处理，仍然使用原有的 func_f 方法，但分块处理以节省内存
+                chunk_size = 100  # 每次处理100个文本
+                all_processed_texts = []
+                all_entities = []
+                all_chunk_masking_ops = []
+
+                for i in range(0, len(non_empty_data), chunk_size):
+                    chunk = non_empty_data[i : i + chunk_size]
+
+                    # 处理当前块
+                    chunk_results = table_masking_worker.func_f(
+                        chunk, request_id=request_id
+                    )
+
+                    # 收集结果
+                    if "text" in chunk_results:
+                        all_processed_texts.extend(chunk_results["text"])
+
+                    if "entities" in chunk_results:
+                        all_entities.extend(chunk_results["entities"])
+
+                    if "masking_operations" in chunk_results:
+                        for op in chunk_results["masking_operations"]:
+                            op_with_context = {
+                                "column": column,
+                                "original_text": op["original_text"],
+                                "entity_type": op["entity_type"],
+                                "replaced_text": op["replaced_text"],
+                                "applied_method": op.get("applied_method", "text"),
+                                "original_text_index": op.get("original_text_index", -1)
+                                + i,
+                            }
+                            all_chunk_masking_ops.append(op_with_context)
+
+                # 将处理结果映射回 Polars DataFrame
+                processed_count = 0
+                processed_column_data = []
+
+                for text in column_data:
+                    if text is not None and str(text).strip():
+                        if processed_count < len(all_processed_texts):
+                            processed_column_data.append(
+                                all_processed_texts[processed_count]
+                            )
+                            processed_count += 1
+                        else:
+                            processed_column_data.append(text)
+                    else:
+                        processed_column_data.append(text)
+
+                # 更新列数据
+                df_pl = df_pl.with_columns(
+                    [pl.Series(processed_column_data).alias(column)]
                 )
 
-                processing_results[column] = results
-                if "text" in results:
-                    # 将处理结果映射回原DataFrame
-                    non_empty_indices = [
-                        i for i, text in enumerate(column_data) if text.strip()
-                    ]
-                    for idx_pos, result_text in zip(non_empty_indices, results["text"]):
-                        df.at[idx_pos, column] = result_text
-
-                # 收集脱敏操作信息
-                if "masking_operations" in results and results["masking_operations"]:
-                    for op in results["masking_operations"]:
-                        op_with_context = {
-                            "column": column,
-                            "original_text": op["original_text"],
-                            "entity_type": op["entity_type"],
-                            "replaced_text": op["replaced_text"],
-                            "applied_method": op.get("applied_method", "text"),
-                            "original_text_index": op.get("original_text_index", -1),
-                        }
-                        all_masking_operations.append(op_with_context)
-
-                # 统计实体数量
-                column_entities = 0
-                if "entities" in results:
-                    column_entities = sum(
-                        len(entities) for entities in results["entities"]
-                    )
-                    total_entities_found += column_entities
+                # 统计结果
+                column_entities = sum(len(entities) for entities in all_entities)
+                total_entities_found += column_entities
 
                 column_stats[column] = {
                     "method": "text",
@@ -1497,29 +1805,38 @@ def process_table_masking_task(
                     else 0,
                     "processing_time": time.time() - column_start_time,
                 }
-            else:
-                # 使用其他脱敏方法
-                processed_data = anonymizer.apply_method(non_empty_data, method)
 
-                # 将处理结果映射回原DataFrame
-                non_empty_indices = [
-                    i for i, text in enumerate(column_data) if text.strip()
-                ]
-                for idx_pos, result in zip(non_empty_indices, processed_data):
-                    df.at[idx_pos, column] = result
+                processing_results[column] = {
+                    "method": "text",
+                    "processed_count": len(all_processed_texts),
+                    "entities_found": column_entities,
+                }
+
+                all_masking_operations.extend(all_chunk_masking_ops)
+
+            else:
+                # apply_method_series 输入从list换为series
+                processed_data = anonymizer.apply_method_series(column_data, method)
+
+                # 将处理结果更新到 Polars DataFrame
+                df_pl = df_pl.with_columns([pl.Series(processed_data).alias(column)])
 
                 # 记录处理操作
                 column_masking_ops = []
                 for idx_val, (original, processed) in enumerate(
-                    zip(non_empty_data, processed_data)
+                    zip(column_data, processed_data)
                 ):
-                    if original != processed:
+                    if (
+                        original != processed
+                        and original is not None
+                        and str(original).strip()
+                    ):
                         column_masking_ops.append(
                             {
                                 "column": column,
-                                "original_text": original,
+                                "original_text": str(original),
                                 "entity_type": method.upper(),
-                                "replaced_text": processed,
+                                "replaced_text": str(processed),
                                 "applied_method": method,
                                 "original_text_index": idx_val,
                             }
@@ -1552,17 +1869,20 @@ def process_table_masking_task(
         output_filename = f"{request_id}_{filename}"
         output_file = TASK_RESULTS_DIR / output_filename
 
+        # 将 Polars DataFrame 保存为文件
         if file_extension == ".csv":
-            df.to_csv(output_file, index=False, encoding="utf-8")
+            df_pl.write_csv(output_file)
         else:  # .xlsx
-            df.to_excel(output_file, index=False, engine="openpyxl")
+            # 对于 Excel，转换为 pandas 后保存
+            df_pandas_final = df_pl.to_pandas()
+            df_pandas_final.to_excel(output_file, index=False, engine="openpyxl")
 
         processing_time = time.time() - start_time
 
         # 构建汇总结果
         aggregation_summary = {
             "file_name": filename,
-            "total_rows": len(df),
+            "total_rows": len(df_pl),
             "total_columns": len(columns_dict),
             "total_texts_processed": total_texts_processed,
             "total_entities_found": total_entities_found,
@@ -1576,7 +1896,7 @@ def process_table_masking_task(
 
         logger.bind(type="TASK", request_id=request_id).success(
             f"Task completed - File: {filename}, Time: {processing_time:.2f}s, "
-            f"Rows: {len(df)}, Entities: {total_entities_found}"
+            f"Rows: {len(df_pl)}, Entities: {total_entities_found}"
         )
 
         # 返回结果
@@ -1587,10 +1907,8 @@ def process_table_masking_task(
             "original_filename": filename,
             "processed_columns": list(columns_dict.keys()),
             "column_methods": columns_dict,
-            "total_rows": len(df),
+            "total_rows": len(df_pl),
             "aggregation_results": aggregation_summary,
-            # "processing_results": processing_results,
-            # "masking_operations": all_masking_operations,
             "request_id": request_id,
         }
 
@@ -2097,7 +2415,7 @@ async def submit_table_masking(
         }
 
     except HTTPException as he:
-        raise
+        raise he
     except Exception as e:
         logger.bind(type="SERVICE", request_id=request_id).error(
             f"Request from {client_ip} - Failed to submit task: {e}"
@@ -2399,7 +2717,7 @@ async def download_result(
 if __name__ == "__main__":
     # 超时检测
     current_date = datetime.now().date()
-    trial_end_date = date(2026, 1, 31)
+    trial_end_date = date(2026, 1, 16)
     if current_date > trial_end_date:
         logger.warning("试用期已过，退出程序。")
         sys.exit(1)

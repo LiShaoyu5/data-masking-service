@@ -4,3 +4,4 @@ model.bin
 roberta-base-finetuned-cluener2020-chinese/
 logs/
 static/
+__pycache__/
