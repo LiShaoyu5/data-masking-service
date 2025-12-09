@@ -8,3 +8,4 @@ __pycache__/
 large_test.py
 large_test.csv
 1000_test.csv
+.vscode/

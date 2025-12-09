@@ -3,7 +3,7 @@ Task processor module for RQ workers
 This module contains the task processing functions that will be executed by RQ workers
 """
 
-import io
+import os
 import json
 import time
 from pathlib import Path
@@ -19,7 +19,7 @@ TASK_RESULTS_DIR.mkdir(exist_ok=True)
 
 
 def process_table_masking_task(
-    file_content: bytes,
+    file_path: str,
     filename: str,
     columns_dict: dict,
     request_id: str,
@@ -29,7 +29,7 @@ def process_table_masking_task(
     Polars 优化版本
 
     Args:
-        file_content: 文件内容（字节）
+        file_path: 文件在磁盘上的路径
         filename: 原始文件名
         columns_dict: 列名和处理方式的字典
         request_id: 请求ID
@@ -41,8 +41,13 @@ def process_table_masking_task(
     try:
         start_time = time.time()
 
+        # 确保文件存在
+        input_file = Path(file_path)
+        if not input_file.exists():
+            raise FileNotFoundError(f"输入文件不存在: {file_path}")
+
         logger.bind(type="TASK", request_id=request_id).info(
-            f"Task started - Processing file: {filename} with columns: {columns_dict}"
+            f"Task started - Processing file: {filename} from {file_path} with columns: {columns_dict}"
         )
 
         # Get the pre-initialized table masking worker
@@ -57,7 +62,7 @@ def process_table_masking_task(
             for encoding in supported_encodings:
                 try:
                     df_pl = pl.read_csv(
-                        io.BytesIO(file_content),
+                        file_path,
                         encoding=encoding,
                         null_values=["", "NULL", "null", "None"],
                         infer_schema_length=10000,  # 推断模式
@@ -72,7 +77,7 @@ def process_table_masking_task(
                 raise ValueError("文件解码失败，尝试了所有支持的编码")
         else:  # .xlsx
             # 对于 Excel 文件，先用 pandas 读取，然后转换为 Polars
-            df_pandas = pd.read_excel(io.BytesIO(file_content), keep_default_na=False)
+            df_pandas = pd.read_excel(file_path, keep_default_na=False)
             df_pl = pl.from_pandas(df_pandas)
 
         logger.bind(type="TASK", request_id=request_id).info(
@@ -270,6 +275,18 @@ def process_table_masking_task(
             f"Rows: {len(df_pl)}, Entities: {total_entities_found}"
         )
 
+        # 清理输入文件
+        try:
+            if input_file.exists():
+                os.remove(input_file)
+                logger.bind(type="TASK", request_id=request_id).info(
+                    f"Input file deleted: {file_path}"
+                )
+        except Exception as e:
+            logger.bind(type="TASK", request_id=request_id).warning(
+                f"Failed to delete input file {file_path}: {e}"
+            )
+
         # 返回结果
         return {
             "success": True,
@@ -287,4 +304,15 @@ def process_table_masking_task(
         logger.bind(type="TASK", request_id=request_id).error(
             f"Task failed - Error: {str(e)}"
         )
+        # 清理输入文件（即使任务失败也要清理）
+        try:
+            if 'input_file' in locals() and input_file.exists():
+                os.remove(input_file)
+                logger.bind(type="TASK", request_id=request_id).info(
+                    f"Input file deleted after failure: {file_path}"
+                )
+        except Exception as cleanup_e:
+            logger.bind(type="TASK", request_id=request_id).warning(
+                f"Failed to delete input file {file_path} after failure: {cleanup_e}"
+            )
         raise

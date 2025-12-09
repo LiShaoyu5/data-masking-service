@@ -2104,7 +2104,7 @@ async def submit_table_masking(
                     detail=f"列 '{col}' 的处理方式 '{method}' 无效，支持的方法: {', '.join(valid_methods)}",
                 )
 
-        # 读取文件内容
+        # 读取文件内容并保存到磁盘
         file_content = await file.read()
 
         if len(file_content) == 0:
@@ -2113,20 +2113,28 @@ async def submit_table_masking(
             )
             raise HTTPException(status_code=400, detail="文件内容为空。")
 
+        # 生成唯一的文件名保存到static目录
+        input_filename = f"input_{request_id}_{file.filename}"
+        input_file_path = TASK_RESULTS_DIR / input_filename
+
+        # 保存文件到磁盘
+        with open(input_file_path, "wb") as f:
+            f.write(file_content)
+
         logger.bind(type="SERVICE", request_id=request_id).info(
-            f"Request from {client_ip} - Submitting task for file: {file.filename}, "
+            f"Request from {client_ip} - File saved to: {input_file_path}, "
             f"size: {len(file_content)} bytes, columns: {list(columns_dict.keys())}"
         )
 
-        # 提交任务到 RQ 队列
+        # 提交任务到 RQ 队列，只传递文件路径
         job = task_queue.enqueue(
             process_table_masking_task,
-            file_content=file_content,
+            file_path=str(input_file_path),
             filename=file.filename,
             columns_dict=columns_dict,
             request_id=request_id,
             file_extension=file_extension,
-            job_timeout="30m",  # 30分钟超时
+            job_timeout="60m",  # 30分钟超时
             result_ttl=86400,  # 结果保留24小时
             failure_ttl=86400,  # 失败信息保留24小时
         )
