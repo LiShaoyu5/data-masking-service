@@ -9,3 +9,11 @@ large_test.py
 large_test.csv
 1000_test.csv
 .vscode/
+city.csv
+clean.sh
+default_rules.bin
+medicine.csv
+names.txt
+pack.sh
+test_download.csv
+test.ipynb
