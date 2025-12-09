@@ -5,3 +5,6 @@ roberta-base-finetuned-cluener2020-chinese/
 logs/
 static/
 __pycache__/
+large_test.py
+large_test.csv
+1000_test.csv

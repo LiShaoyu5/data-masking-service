@@ -35,8 +35,11 @@ def main():
         # 解决uvicorn创建子进程超时无限循环的问题
         original_uvicorn_is_alive = uvicorn.supervisors.multiprocess.Process.is_alive
 
-        def patched_is_alive(self: Any) -> bool:
-            timeout = 120
+        # def patched_is_alive_legacy(self: Any) -> bool:
+        #     timeout=120
+        #     return original_uvicorn_is_alive(self, timeout)
+
+        def patched_is_alive(self: Any, timeout=120) -> bool:
             return original_uvicorn_is_alive(self, timeout)
 
         uvicorn.supervisors.multiprocess.Process.is_alive = patched_is_alive

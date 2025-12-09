@@ -98,6 +98,17 @@ def main():
     logger.info(f"Worker will process tasks from queue: '{queue_name}'")
     logger.info(f"Current queue length: {len(queue)}")
 
+    # Pre-initialize models to avoid first-task latency
+    try:
+        from worker_models import initialize_worker_models
+
+        logger.info("Pre-initializing models in worker...")
+        initialize_worker_models()
+        logger.success("Models pre-initialized successfully")
+    except Exception as e:
+        logger.warning(f"Failed to pre-initialize models: {e}")
+        logger.info("Models will be initialized on first task execution")
+
     # 配置 Worker
     worker_name = f"worker-{socket.gethostname()}-{os.getpid()}"
 
